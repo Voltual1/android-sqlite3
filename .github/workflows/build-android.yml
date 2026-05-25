@@ -18,10 +18,13 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
+      - name: Setup Android SDK
+        uses: android-actions/setup-android@v3
+
       - name: Install Android NDK
         run: |
           yes | sdkmanager --licenses >/dev/null
-          sdkmanager "ndk;29.0.14206865"
+          sdkmanager --install "ndk;29.0.14206865"
           echo "ANDROID_NDK_HOME=$ANDROID_HOME/ndk/29.0.14206865" >> "$GITHUB_ENV"
 
       - name: Download official SQLite source
@@ -45,4 +48,3 @@ jobs:
             --title "$GITHUB_REF_NAME" \
             --notes "Android sqlite3 binaries built from official SQLite source." \
           || gh release upload "$GITHUB_REF_NAME" dist/sqlite3-android-*.zip --clobber
-
