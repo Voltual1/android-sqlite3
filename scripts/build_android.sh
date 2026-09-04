@@ -40,14 +40,15 @@ if [[ ! -d "$TOOLCHAIN" ]]; then
   exit 1
 fi
 
-if [[ ! -f "$SOURCE_DIR/sqlite3.c" || ! -f "$SOURCE_DIR/shell.c" ]]; then
+# 编译 so 只需要 sqlite3.c，不需要 shell.c
+if [[ ! -f "$SOURCE_DIR/sqlite3.c" ]]; then
   echo "SQLite amalgamation not found. Run scripts/download_sqlite.sh first." >&2
   exit 1
 fi
 
 COMMON_CFLAGS=(
   -Os
-  -fPIE
+  -fPIC  # 1. 关键修改：从 -fPIE 改为 -fPIC
   -DSQLITE_THREADSAFE=1
   -DSQLITE_ENABLE_COLUMN_METADATA
   -DSQLITE_ENABLE_DBSTAT_VTAB
@@ -61,7 +62,8 @@ COMMON_CFLAGS=(
   -DHAVE_READLINE=0
   -DSQLITE_ENABLE_DBPAGE_VTAB
 )
-COMMON_LDFLAGS=(-pie -ldl -lm -lz)
+# 2. 关键修改：从 -pie 改为 -shared
+COMMON_LDFLAGS=(-shared -ldl -lm -lz)
 
 build_one() {
   local abi="$1"
@@ -69,14 +71,16 @@ build_one() {
   local out_dir="$DIST_DIR/$abi"
   mkdir -p "$out_dir"
 
+  # 3. 关键修改：只编译 sqlite3.c，输出文件名改为 libsqlite3.so
   "$TOOLCHAIN/$compiler" \
     "${COMMON_CFLAGS[@]}" \
-    "$SOURCE_DIR/shell.c" "$SOURCE_DIR/sqlite3.c" \
-    -o "$out_dir/sqlite3" \
+    "$SOURCE_DIR/sqlite3.c" \
+    -o "$out_dir/libsqlite3.so" \
     "${COMMON_LDFLAGS[@]}"
 
-  "$TOOLCHAIN/llvm-strip" "$out_dir/sqlite3"
-  chmod 0755 "$out_dir/sqlite3"
+  # 4. 关键修改：strip 目标改为 libsqlite3.so
+  "$TOOLCHAIN/llvm-strip" "$out_dir/libsqlite3.so"
+  chmod 0755 "$out_dir/libsqlite3.so"
 }
 
 rm -rf "$DIST_DIR"
@@ -88,7 +92,8 @@ build_one "x86_64" "x86_64-linux-android${API_LEVEL}-clang"
 
 (
   cd "$DIST_DIR"
-  zip -qr "sqlite3-android-${SQLITE_VERSION}.zip" arm64-v8a armeabi-v7a x86_64
+  # 打包文件名改为 so 相关
+  zip -qr "sqlite3-android-so-${SQLITE_VERSION}.zip" arm64-v8a armeabi-v7a x86_64
 )
 
-find "$DIST_DIR" -maxdepth 2 -type f -print
+find "$DIST_DIR" -maxdepth 2 -type f -print 
