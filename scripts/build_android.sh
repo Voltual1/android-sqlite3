@@ -10,6 +10,10 @@ SOURCE_DIR="${SOURCE_DIR:-$ROOT_DIR/build/sqlite-amalgamation-${SQLITE_VERSION_N
 DIST_DIR="${DIST_DIR:-$ROOT_DIR/dist}"
 NDK_HOME="${ANDROID_NDK_HOME:-${ANDROID_NDK_ROOT:-}}"
 
+# SQLite 源码树路径（用于编译 so 库中的 recover 接口）
+SQLITE_SRC_DIR="${SQLITE_SRC_DIR:-$ROOT_DIR/sqlite-src-3530200}"
+RECOVER_DIR="$SQLITE_SRC_DIR/ext/recover"
+
 if [[ -z "$NDK_HOME" ]]; then
   for candidate in \
     "$HOME/Library/Android/sdk/ndk/29.0.14206865" \
@@ -40,15 +44,22 @@ if [[ ! -d "$TOOLCHAIN" ]]; then
   exit 1
 fi
 
-# 编译 so 只需要 sqlite3.c，不需要 shell.c
-if [[ ! -f "$SOURCE_DIR/sqlite3.c" ]]; then
+# 检查 Amalgamation 核心文件
+if [[ ! -f "$SOURCE_DIR/sqlite3.c" || ! -f "$SOURCE_DIR/shell.c" ]]; then
   echo "SQLite amalgamation not found. Run scripts/download_sqlite.sh first." >&2
   exit 1
 fi
 
+# 检查 recover 核心扩展源文件
+if [[ ! -f "$RECOVER_DIR/sqlite3recover.c" || ! -f "$RECOVER_DIR/dbdata.c" ]]; then
+  echo "Error: Recover extension files not found at $RECOVER_DIR" >&2
+  echo "Please verify sqlite-src-3530200 directory exists under $ROOT_DIR" >&2
+  exit 1
+fi
+
+# 基础编译宏定义
 COMMON_CFLAGS=(
   -Os
-  -fPIC  # 1. 关键修改：从 -fPIE 改为 -fPIC
   -DSQLITE_THREADSAFE=1
   -DSQLITE_ENABLE_COLUMN_METADATA
   -DSQLITE_ENABLE_DBSTAT_VTAB
@@ -62,8 +73,6 @@ COMMON_CFLAGS=(
   -DHAVE_READLINE=0
   -DSQLITE_ENABLE_DBPAGE_VTAB
 )
-# 2. 关键修改：从 -pie 改为 -shared
-COMMON_LDFLAGS=(-shared -ldl -lm -lz)
 
 build_one() {
   local abi="$1"
@@ -71,14 +80,41 @@ build_one() {
   local out_dir="$DIST_DIR/$abi"
   mkdir -p "$out_dir"
 
-  # 3. 关键修改：只编译 sqlite3.c，输出文件名改为 libsqlite3.so
+  echo "--------------------------------------------------"
+  echo "Building for ABI: $abi"
+  echo "--------------------------------------------------"
+
+  # ==================================================
+  # 1. 编译 sqlite3 命令行工具 (PIE Executable)
+  # ==================================================
+  echo "-> Compiling sqlite3 CLI executable..."
   "$TOOLCHAIN/$compiler" \
     "${COMMON_CFLAGS[@]}" \
+    -fPIE \
+    "$SOURCE_DIR/shell.c" \
     "$SOURCE_DIR/sqlite3.c" \
-    -o "$out_dir/libsqlite3.so" \
-    "${COMMON_LDFLAGS[@]}"
+    -o "$out_dir/sqlite3" \
+    -pie -ldl -lm -lz
 
-  # 4. 关键修改：strip 目标改为 libsqlite3.so
+  "$TOOLCHAIN/llvm-strip" "$out_dir/sqlite3"
+  chmod 0755 "$out_dir/sqlite3"
+
+  # ==================================================
+  # 2. 编译 libsqlite3.so 共享库 (包含 Recover API)
+  # ==================================================
+  echo "-> Compiling libsqlite3.so (Shared Library with Recover API)..."
+  "$TOOLCHAIN/$compiler" \
+    "${COMMON_CFLAGS[@]}" \
+    -fPIC \
+    -DSQLITE_CORE \
+    -I"$SOURCE_DIR" \
+    -I"$RECOVER_DIR" \
+    "$SOURCE_DIR/sqlite3.c" \
+    "$RECOVER_DIR/dbdata.c" \
+    "$RECOVER_DIR/sqlite3recover.c" \
+    -o "$out_dir/libsqlite3.so" \
+    -shared -ldl -lm -lz
+
   "$TOOLCHAIN/llvm-strip" "$out_dir/libsqlite3.so"
   chmod 0755 "$out_dir/libsqlite3.so"
 }
@@ -90,10 +126,12 @@ build_one "arm64-v8a" "aarch64-linux-android${API_LEVEL}-clang"
 build_one "armeabi-v7a" "armv7a-linux-androideabi${API_LEVEL}-clang"
 build_one "x86_64" "x86_64-linux-android${API_LEVEL}-clang"
 
+# 打包发布版
 (
   cd "$DIST_DIR"
-  # 打包文件名改为 so 相关
-  zip -qr "sqlite3-android-so-${SQLITE_VERSION}.zip" arm64-v8a armeabi-v7a x86_64
+  zip -qr "sqlite3-android-complete-${SQLITE_VERSION}.zip" arm64-v8a armeabi-v7a x86_64
 )
 
+echo "=================================================="
+echo "Build complete! Output artifacts:"
 find "$DIST_DIR" -maxdepth 2 -type f -print 
